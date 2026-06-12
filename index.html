@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Batch Watermarker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; padding: 5vw; font-size: 4vw; }
+  h1 { font-size: 6vw; margin-bottom: 6vw; }
+  label { display: block; font-weight: bold; margin-bottom: 2vw; margin-top: 5vw; font-size: 4.5vw; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 5vw 0; }
+  #status { font-size: 4vw; color: #555; margin-top: 2vw; }
+
+  input[type="file"] { font-size: 4vw; width: 100%; margin-bottom: 1vw; }
+
+  button {
+    display: block; width: 100%;
+    padding: 4vw;
+    font-size: 4.5vw;
+    margin-top: 3vw;
+    cursor: pointer;
+    border: 1px solid #aaa;
+    border-radius: 2vw;
+    background: #fff;
+  }
+  button:disabled { color: #aaa; }
+
+  #thumb-grid { display: flex; flex-wrap: wrap; gap: 2vw; margin-top: 3vw; }
+  .thumb-item { position: relative; width: 20vw; height: 20vw; }
+  .thumb-item img { width: 20vw; height: 20vw; object-fit: cover; border: 1px solid #ccc; border-radius: 1vw; display: block; }
+  .thumb-item button {
+    position: absolute; top: -2vw; right: -2vw;
+    width: 6vw; height: 6vw; padding: 0;
+    font-size: 3.5vw; line-height: 6vw; text-align: center;
+    background: #333; color: white; border: none;
+    border-radius: 50%; cursor: pointer; margin: 0;
+  }
+
+  #wm-preview { width: 20vw; height: 20vw; object-fit: contain; border: 1px solid #ccc; border-radius: 1vw; margin-top: 2vw; display: none; }
+  #preview-img { width: 100%; border: 1px solid #ccc; display: block; margin-bottom: 3vw; }
+  #counter { font-size: 4.5vw; font-weight: bold; margin-bottom: 2vw; }
+  #ios-tip { font-size: 3.5vw; color: #888; margin-top: 2vw; display: none; }
+</style>
+</head>
+<body>
+
+<h1>Batch Watermarker</h1>
+
+<label>Photos</label>
+<input type="file" id="photos-input" accept="image/*" multiple>
+<button onclick="clearPhotos()">Clear All</button>
+<div id="thumb-grid"></div>
+
+<hr>
+
+<label>Watermark image (logo/PNG)</label>
+<input type="file" id="wm-image" accept="image/*">
+<img id="wm-preview" src="" alt="Watermark preview">
+
+<hr>
+
+<button id="process-btn" onclick="processImages()">Add Watermark</button>
+<div id="status"></div>
+
+<div id="preview-section" style="display:none;">
+  <hr>
+  <div id="counter"></div>
+  <img id="preview-img" src="" alt="Preview">
+  <button id="download-btn" onclick="downloadCurrent()">Download</button>
+  <p id="ios-tip">On iPhone: press and hold the image above, then tap "Save to Photos" or "Save Image".</p>
+</div>
+
+<canvas id="canvas" style="display:none;"></canvas>
+
+<script>
+  let storedFiles = [];
+  let processedImages = [];
+  let currentIndex = 0;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+  function addFiles(files) {
+    Array.from(files).forEach(f => {
+      const exists = storedFiles.some(s => s.name === f.name && s.size === f.size);
+      if (!exists) storedFiles.push(f);
+    });
+    renderThumbs();
+  }
+
+  function removeFile(index) {
+    storedFiles.splice(index, 1);
+    renderThumbs();
+  }
+
+  function renderThumbs() {
+    const grid = document.getElementById('thumb-grid');
+    grid.innerHTML = '';
+    storedFiles.forEach((f, i) => {
+      const url = URL.createObjectURL(f);
+      const div = document.createElement('div');
+      div.className = 'thumb-item';
+      const img = document.createElement('img');
+      img.src = url;
+      img.onload = () => URL.revokeObjectURL(url);
+      const btn = document.createElement('button');
+      btn.textContent = 'x';
+      btn.onclick = () => removeFile(i);
+      div.appendChild(img);
+      div.appendChild(btn);
+      grid.appendChild(div);
+    });
+    document.getElementById('status').textContent = storedFiles.length > 0 ? storedFiles.length + ' photo(s) selected.' : '';
+  }
+
+  function clearPhotos() {
+    storedFiles = [];
+    document.getElementById('photos-input').value = '';
+    document.getElementById('status').textContent = '';
+    document.getElementById('preview-section').style.display = 'none';
+    document.getElementById('thumb-grid').innerHTML = '';
+  }
+
+  document.getElementById('photos-input').addEventListener('change', function() {
+    addFiles(this.files);
+  });
+
+  document.getElementById('wm-image').addEventListener('change', function() {
+    const f = this.files[0];
+    if (!f) return;
+    const prev = document.getElementById('wm-preview');
+    prev.src = URL.createObjectURL(f);
+    prev.style.display = 'block';
+  });
+
+  function loadImage(src) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.src = src;
+    });
+  }
+
+  async function processImages() {
+    if (!storedFiles.length) { alert('Please add at least one photo first.'); return; }
+    if (!document.getElementById('wm-image').files[0]) { alert('Please select a watermark image.'); return; }
+
+    const btn = document.getElementById('process-btn');
+    btn.disabled = true;
+    processedImages = [];
+
+    const wmImg = await loadImage(URL.createObjectURL(document.getElementById('wm-image').files[0]));
+
+    for (let i = 0; i < storedFiles.length; i++) {
+      document.getElementById('status').textContent = 'Processing ' + (i+1) + ' of ' + storedFiles.length + '...';
+      const dataUrl = await applyWatermark(storedFiles[i], wmImg);
+      processedImages.push({ dataUrl, name: storedFiles[i].name });
+    }
+
+    document.getElementById('status').textContent = 'Done. ' + processedImages.length + ' photos ready.';
+    btn.disabled = false;
+    document.getElementById('download-btn').disabled = false;
+    currentIndex = 0;
+    showPreview();
+  }
+
+  async function applyWatermark(file, wmImg) {
+    const src = URL.createObjectURL(file);
+    const photo = await loadImage(src);
+    URL.revokeObjectURL(src);
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = photo.width;
+    canvas.height = photo.height;
+    ctx.drawImage(photo, 0, 0);
+
+    const margin = Math.round(photo.width * 0.02);
+    const wmW = Math.round(photo.width * 0.25);
+    const wmH = Math.round((wmImg.height / wmImg.width) * wmW);
+
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(wmImg, photo.width - wmW - margin, photo.height - wmH - margin, wmW, wmH);
+    ctx.globalAlpha = 1.0;
+
+    return canvas.toDataURL('image/jpeg', 0.92);
+  }
+
+  function showPreview() {
+    document.getElementById('preview-section').style.display = 'block';
+    const item = processedImages[currentIndex];
+    document.getElementById('preview-img').src = item.dataUrl;
+    document.getElementById('counter').textContent = 'Photo ' + (currentIndex+1) + ' of ' + processedImages.length;
+    if (isIOS) {
+      document.getElementById('download-btn').style.display = 'none';
+      document.getElementById('ios-tip').style.display = 'block';
+    }
+  }
+
+  function downloadCurrent() {
+    const item = processedImages[currentIndex];
+    const a = document.createElement('a');
+    a.href = item.dataUrl;
+    const base = item.name.lastIndexOf('.') !== -1 ? item.name.substring(0, item.name.lastIndexOf('.')) : item.name;
+    a.download = base + '_watermarked.jpg';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    if (currentIndex < processedImages.length - 1) {
+      currentIndex++;
+      showPreview();
+    } else {
+      document.getElementById('counter').textContent = 'All ' + processedImages.length + ' photos downloaded.';
+      document.getElementById('download-btn').disabled = true;
+    }
+  }
+</script>
+</body>
+</html>
